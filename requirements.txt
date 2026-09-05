@@ -1,7 +1,9 @@
 streamlit
+psxdata
 yfinance
-beautifulsoup4
-requests
 pandas
 numpy
 scipy
+requests
+beautifulsoup4
+plotly
