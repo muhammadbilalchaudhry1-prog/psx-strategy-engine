@@ -1,3 +1,4 @@
+import concurrent.futures
 import time
 import pandas as pd
 import requests
@@ -5,10 +6,10 @@ import streamlit as st
 import yfinance as yf
 
 # ==========================================
-# 1. PAGE SETUP & STYLING
+# 1. PAGE CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="PSX Ultimate Whole-Market Scanner",
+    page_title="PSX High-Speed Quant Engine",
     page_icon="🇵🇰",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -35,31 +36,45 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. COMPLETE PSX ALL-SHARE SCRAPER (DPS API)
+# 2. DYNAMIC FULL PSX UNIVERSE SCRAPER (500+ TICKERS)
 # ==========================================
 @st.cache_data(ttl=21600)
 def get_complete_psx_universe():
-    """Dynamically fetches EVERY listed security (Equities, Rights Shares, Small Caps) directly from the official PSX Data Portal."""
+    """Scrapes the complete, up-to-date PSX stock directory directly from PSX Data Portal APIs."""
     symbols = set()
-    
-    # 1. Official PSX DPS Live Summary API
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    # 1. Primary Endpoint: Market Summary Data
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get("https://dps.psx.com.pk/data/summary", headers=headers, timeout=10)
+        res = requests.get(
+            "https://dps.psx.com.pk/data/summary", headers=headers, timeout=8
+        )
         if res.status_code == 200:
-            data = res.json()
-            for item in data:
+            for item in res.json():
                 code = item.get("code")
                 if code:
                     symbols.add(str(code).strip().upper())
     except Exception:
         pass
 
-    # 2. Comprehensive Static Master List (Includes Right Shares, Restructured & Micro-Caps)
+    # 2. Secondary Endpoint: Symbols Master List
+    try:
+        res = requests.get(
+            "https://dps.psx.com.pk/symbols", headers=headers, timeout=8
+        )
+        if res.status_code == 200:
+            for item in res.json():
+                code = item.get("symbol") or item.get("code")
+                if code:
+                    symbols.add(str(code).strip().upper())
+    except Exception:
+        pass
+
+    # 3. Comprehensive Master List Safeguard (Rights, Micro-Caps & Restructured)
     master_fallback = [
-        # Micro-caps, Rights & Specific Request Stocks
         "SGPL", "SGPLR", "WAVES", "WAVESAPP", "WAVESAPPR", "CLVL", "LEUL", "ADMM", "BUXL", "KOHE", "MSOT", "DAAG", "DYNO",
-        # Standard PSX Universe
         "SYS", "TRG", "AVN", "AIRLINK", "OCTOPUS", "PTC", "WTL", "TELE", "HUMNL", "INBOX", "TPLP", "TPL", "NETSOL",
         "OGDC", "PPL", "MARI", "POL", "PSO", "SHEL", "SNGP", "SSGC", "APL", "HASCOL", "HTL", "ATRL", "NRL", "PRL", "CNERGY",
         "MCB", "UBL", "MEBL", "HBL", "BAFL", "BOP", "FABL", "AKBL", "NBP", "BIPL", "SNBL", "JSBL", "SPL", "SILK",
@@ -70,8 +85,8 @@ def get_complete_psx_universe():
         "ILP", "NML", "NCL", "GATM", "KTML", "TREET", "HAEL", "CRTM", "ANL",
         "TGL", "UNITY", "PNSC", "SCL", "MUREB", "STCL", "GHGL", "NESTLE", "NATF", "SHEZ", "SML", "JDWS", "TARC"
     ]
-    
     symbols.update(master_fallback)
+
     return sorted(list(symbols))
 
 
@@ -81,34 +96,34 @@ def get_complete_psx_universe():
 def fetch_stock_dataframe(symbol: str) -> pd.DataFrame:
     """Fetches stock data directly from PSX DPS API first, falling back to yfinance."""
     clean_symbol = symbol.strip().upper()
-    
-    # --- Primary Source: PSX DPS Official API ---
+
+    # Direct PSX Data Portal API
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         url = f"https://dps.psx.com.pk/data/timeseries/eod/{clean_symbol}"
         res = requests.get(url, headers=headers, timeout=4)
         if res.status_code == 200:
             raw = res.json().get("data", [])
-            if raw and len(raw) >= 5:
+            if raw and len(raw) >= 3:
                 df = pd.DataFrame(raw, columns=["Epoch", "Close", "Volume"])
                 df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
                 df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
-                
-                # Approximate High, Low, Open if missing from basic API payload
+
+                # Set High, Low, Open equal to Close if intraday range is unavailable in payload
                 df["High"] = df["Close"]
                 df["Low"] = df["Close"]
                 df["Open"] = df["Close"]
                 df = df.dropna().reset_index(drop=True)
-                if len(df) >= 5:
+                if len(df) >= 3:
                     return df
     except Exception:
         pass
 
-    # --- Secondary Fallback: Yahoo Finance ---
+    # Yahoo Finance Fallback
     yf_symbol = f"{clean_symbol}.KA"
     try:
         df = yf.Ticker(yf_symbol).history(period="60d")
-        if not df.empty and len(df) >= 5:
+        if not df.empty and len(df) >= 3:
             return df
     except Exception:
         pass
@@ -117,12 +132,12 @@ def fetch_stock_dataframe(symbol: str) -> pd.DataFrame:
 
 
 # ==========================================
-# 4. QUANT ENGINE MODEL (PHYSICS & CONFLUENCE)
+# 4. QUANT ENGINE MODEL (SWING & BTST LOGIC)
 # ==========================================
 def calculate_swing_score(df_daily):
     """Multi-Day Swing Strategy: Support Floor + Volume Absorption."""
     hist_len = len(df_daily)
-    if hist_len < 10:
+    if hist_len < 5:
         return 0.0, "Insufficient history for swing scan", "N/A"
 
     score = 0.0
@@ -138,7 +153,7 @@ def calculate_swing_score(df_daily):
 
     vol_avg = df_daily["Volume"].tail(min(20, hist_len)).mean()
     vol_today = float(last_bar["Volume"])
-    
+
     if vol_today > (vol_avg * 1.2):
         score += 1.5
         tags.append("Volume Absorption")
@@ -146,7 +161,7 @@ def calculate_swing_score(df_daily):
     sma_len = min(20, hist_len)
     sma20 = df_daily["Close"].rolling(sma_len).mean().iloc[-1]
     std20 = df_daily["Close"].rolling(sma_len).std().iloc[-1]
-    
+
     if pd.notnull(std20) and std20 > 0:
         lower_band = sma20 - (2 * std20)
         if close_p <= lower_band * 1.02:
@@ -160,9 +175,9 @@ def calculate_swing_score(df_daily):
 
 
 def calculate_btst_score(df_daily):
-    """BTST Overnight Strategy: Momentum & Close Pressure."""
+    """BTST Overnight Strategy: Momentum & Volume Pressure."""
     hist_len = len(df_daily)
-    if hist_len < 5:
+    if hist_len < 3:
         return 0.0, "Insufficient history for BTST", "N/A"
 
     score = 0.0
@@ -211,7 +226,7 @@ def process_single_stock(df, clean_code, min_volume):
         curr_close = float(df["Close"].iloc[-1])
         curr_vol = int(df["Volume"].iloc[-1])
 
-        # Apply volume filter, bypass if stock is a Right Share (ends with R)
+        # Apply volume threshold, bypassing for Unpaid Right Shares ending with 'R'
         if curr_vol < min_volume and not clean_code.endswith("R"):
             return None
 
@@ -234,24 +249,44 @@ def process_single_stock(df, clean_code, min_volume):
 
 
 # ==========================================
-# 5. ALL-SHARE BULK SCANNER PIPELINE
+# 5. MULTITHREADED PARALLEL SCAN PIPELINE
 # ==========================================
+def fetch_and_process_worker(args):
+    """Worker task executed concurrently across available CPU threads."""
+    sym, min_volume = args
+    df = fetch_stock_dataframe(sym)
+    return process_single_stock(df, sym, min_volume)
+
+
 def run_all_psx_scan(tickers, min_volume):
+    """Executes multi-threaded data fetching across all PSX tickers concurrently."""
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
 
     total = len(tickers)
+    processed_count = 0
 
-    for idx, sym in enumerate(tickers):
-        df = fetch_stock_dataframe(sym)
-        res = process_single_stock(df, sym, min_volume)
-        if res:
-            results.append(res)
+    tasks = [(sym, min_volume) for sym in tickers]
 
-        percent = min(int(((idx + 1) / total) * 100), 100)
-        progress_bar.progress(percent)
-        status_text.text(f"Scanning Complete PSX Universe: {idx + 1}/{total} stocks processed ({sym})")
+    # Spawns 16 concurrent threads for high-speed network operations
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_and_process_worker, task): task[0]
+            for task in tasks
+        }
+
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            processed_count += 1
+            res = future.result()
+            if res:
+                results.append(res)
+
+            percent = int((processed_count / total) * 100)
+            progress_bar.progress(percent)
+            status_text.text(
+                f"Fast Scanning PSX Universe: {processed_count}/{total} tickers evaluated..."
+            )
 
     status_text.empty()
     progress_bar.empty()
@@ -261,7 +296,7 @@ def run_all_psx_scan(tickers, min_volume):
 # ==========================================
 # 6. STREAMLIT INTERFACE & ROUTING
 # ==========================================
-st.sidebar.title("🇵🇰 PSX Complete Engine")
+st.sidebar.title("🇵🇰 PSX High-Speed Engine")
 
 strategy_view = st.sidebar.radio(
     "Select Mode:",
@@ -294,7 +329,7 @@ st.session_state["portfolio"] = edited_pf
 
 st.sidebar.divider()
 
-if st.sidebar.button("🚀 Scan ALL PSX Equities & Rights", type="primary"):
+if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
     all_tickers = get_complete_psx_universe()
     st.session_state["scan_data"] = run_all_psx_scan(all_tickers, min_vol_input)
     st.session_state["scanned_count"] = len(st.session_state["scan_data"])
@@ -304,7 +339,7 @@ st.title("PSX All-Share & Right Shares Quant Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Total Active Securities Returned: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Active Equities Evaluated: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
@@ -334,10 +369,10 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
 # MODE 1: BTST STRATEGY
 if strategy_view == "⚡ BTST / Overnight Setups":
     st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow)")
-    st.caption("Includes all mainboard stocks, micro-caps, and right shares. **Threshold: Score ≥ 2.5**")
+    st.caption("Evaluates mainboard equities, micro-caps, and LOR rights. **Threshold: Score ≥ 2.5**")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
-        st.info("Click **'Scan ALL PSX Equities & Rights'** in the sidebar to run full scan.")
+        st.info("Click **'Fast Scan ALL PSX Equities & Rights'** in the sidebar to execute scan.")
     else:
         btst_df = df_raw[df_raw["BTST_Score"] >= 2.5].copy()
 
@@ -361,7 +396,7 @@ if strategy_view == "⚡ BTST / Overnight Setups":
                 use_container_width=True,
             )
         else:
-            st.info("No PSX stocks currently cross the BTST Threshold (Score ≥ 2.5).")
+            st.info("No PSX equities currently meet the BTST momentum threshold (Score ≥ 2.5).")
 
 # MODE 2: MULTI-DAY SWING STRATEGY
 elif strategy_view == "📈 Multi-Day Swing Setups":
@@ -369,7 +404,7 @@ elif strategy_view == "📈 Multi-Day Swing Setups":
     st.caption("Filters complete market for support floors and volume absorption. **Threshold: Score ≥ 2.5**")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
-        st.info("Click **'Scan ALL PSX Equities & Rights'** in the sidebar to run full scan.")
+        st.info("Click **'Fast Scan ALL PSX Equities & Rights'** in the sidebar to execute scan.")
     else:
         swing_df = df_raw[df_raw["Swing_Score"] >= 2.5].copy()
 
@@ -393,17 +428,17 @@ elif strategy_view == "📈 Multi-Day Swing Setups":
                 use_container_width=True,
             )
         else:
-            st.warning("No PSX stocks currently cross the Swing Threshold (Score ≥ 2.5).")
+            st.warning("No PSX equities currently meet the Swing threshold (Score ≥ 2.5).")
 
 # MODE 3: SINGLE STOCK SEARCH
 elif strategy_view == "🔍 Single Stock Search & Analysis":
     st.header("🔍 Individual Stock & Rights Lookup")
 
-    search_input = st.text_input("Enter ANY PSX Ticker (e.g., SGPLR, WAVESAPPR, CLVL, LEUL, ADMM):", "SGPLR")
+    search_input = st.text_input("Enter ANY PSX Ticker (e.g., SGPLR, WAVESAPPR, CLVL, LEUL, ADMM):", "CLVL")
 
     if search_input:
         clean_sym = search_input.strip().upper()
-        with st.spinner(f"Analyzing {clean_sym} via PSX Data Portal..."):
+        with st.spinner(f"Fetching {clean_sym} via PSX Data Portal..."):
             df = fetch_stock_dataframe(clean_sym)
             res = process_single_stock(df, clean_sym, min_volume=0)
 
@@ -430,9 +465,9 @@ elif strategy_view == "🔍 Single Stock Search & Analysis":
                     st.write(f"**Stop Loss (-4.5%):** PKR {round(res['Close'] * 0.955, 2)}")
                     st.info(f"**Reasoning:** {res['Swing_Reason']}")
             else:
-                st.error(f"Could not fetch data for '{clean_sym}'. It may be currently inactive or suspended.")
+                st.error(f"Could not fetch data for '{clean_sym}'. It may be suspended or currently inactive.")
 
-# Master Overview
+# Master Overview Table
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
     with st.expander("📋 View Complete Scanned PSX Universe (All Tickers)"):
         st.dataframe(
