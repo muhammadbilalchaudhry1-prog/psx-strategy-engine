@@ -1,3 +1,4 @@
+import concurrent.futures
 import time
 import pandas as pd
 import requests
@@ -8,7 +9,7 @@ import yfinance as yf
 # 1. PAGE SETUP & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="PSX KSE-100 Quant Engine",
+    page_title="PSX Full Market Quant Scanner",
     page_icon="🇵🇰",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -34,32 +35,54 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. EXACT KSE-100 CONSTITUENTS UNIVERSE
+# 2. DYNAMIC FULL PSX UNIVERSE (300+ STOCKS)
 # ==========================================
-@st.cache_data(ttl=86400)
-def get_kse100_tickers():
-    """Returns the benchmark KSE-100 Index constituents."""
-    kse100_symbols = [
-        "SYS", "TRG", "AVN", "AIRLINK", "OCTOPUS", "PTC", "WTL", "TELE", "HUMNL",
-        "OGDC", "PPL", "MARI", "POL", "PSO", "SHEL", "SNGP", "SSGC", "APL", "HTL",
-        "MCB", "UBL", "MEBL", "HBL", "BAFL", "BOP", "FABL", "AKBL", "NBP", "SNBL", "JSBL",
-        "EFERT", "FFC", "ENGRO", "FFBL", "FATIMA",
-        "LUCK", "DGKC", "KOHC", "PIOC", "CHCC", "FCCL", "ACPL", "BWCL", "THCCL",
-        "HUBC", "KAPCO", "KEL", "NCPL", "EPQL", "SPWL", "LPL",
-        "ATRL", "NRL", "PRL", "CNERGY",
-        "EPCL", "AGP", "SEARL", "ABOT", "GLAXO", "COLG", "ARCH", "ICI", "LOTCHEM", "GTYR",
-        "MUGHAL", "ASL", "GHNI", "PAEL", "MTL", "SAZEW", "ISL", "ASTL", "CSAP",
-        "ILP", "NML", "NCL", "GATM", "KTML", "TREET",
-        "TGL", "UNITY", "PNSC", "SCL", "MUREB", "STCL", "GHGL", "NESTLE", "NATF", "SHEZ"
+@st.cache_data(ttl=43200)
+def get_full_psx_universe():
+    """Dynamically fetches all active PSX symbols from DPS API + extensive hardcoded universe."""
+    master_list = [
+        # Commercial Banks & Financials
+        "MCB", "UBL", "MEBL", "HBL", "BAFL", "BOP", "FABL", "AKBL", "NBP", "BIPL", "SNBL", "JSBL", "SPL", "SILK",
+        # Exploration, Marketing & Refineries
+        "OGDC", "PPL", "MARI", "POL", "PSO", "SHEL", "SNGP", "SSGC", "APL", "HASCOL", "HTL", "ATRL", "NRL", "PRL", "CNERGY",
+        # Fertilizer & Chemicals
+        "EFERT", "FFC", "ENGRO", "FFBL", "FATIMA", "EPCL", "AGP", "SEARL", "ABOT", "GLAXO", "PAKOXY", "COLG", "ARCH", "ICI", "LOTCHEM", "GTYR", "BAPL", "DOL", "DYNO", "DAAG",
+        # Cement & Materials
+        "LUCK", "DGKC", "KOHC", "PIOC", "CHCC", "FCCL", "ACPL", "DCL", "POWER", "THCCL", "BWCL", "FLYNG", "SMC",
+        # Tech, Telecom & Media
+        "SYS", "TRG", "AIRLINK", "AVN", "OCTOPUS", "PTC", "WTL", "TELE", "HUMNL", "INBOX", "TPLP", "TPL", "NETSOL",
+        # Power, Energy & Utilities
+        "HUBC", "KAPCO", "KEL", "NCPL", "EPQL", "SPWL", "LPL", "ALTN", "SEL", "TRIBL",
+        # Autos, Engineering & Steel
+        "MUGHAL", "ASL", "GHNI", "PAEL", "MTL", "SAZEW", "PSMC", "LOADS", "GANI", "STPL", "CWSM", "ISL", "ASTL", "CSAP", "DFML",
+        # Textiles & Apparel
+        "ILP", "NML", "NCL", "GATM", "KTML", "TREET", "HAEL", "CRTM", "ANL", "BUXL", "KOHE", "MSOT",
+        # Sugar, Food, Glass & Misc
+        "TGL", "UNITY", "PNSC", "SCL", "MUREB", "STCL", "GHGL", "NESTLE", "NATF", "SHEZ", "SML", "JDWS", "TARC"
     ]
-    return sorted([f"{sym}.KA" for sym in set(kse100_symbols)])
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get("https://dps.psx.com.pk/data/summary", headers=headers, timeout=8)
+        if res.status_code == 200:
+            data = res.json()
+            api_symbols = [
+                str(item.get("code")).strip().upper() 
+                for item in data 
+                if item.get("code") and str(item.get("code")).isalnum() and len(str(item.get("code"))) <= 8
+            ]
+            master_list = list(set(master_list + api_symbols))
+    except Exception:
+        pass
+
+    return sorted([f"{sym}.KA" for sym in set(master_list)])
 
 
 # ==========================================
-# 3. QUANT ENGINES (PHYSICS & CONFLUENCE)
+# 3. QUANT ENGINE MODEL (PHYSICS & CONFLUENCE)
 # ==========================================
 def calculate_swing_score(df_daily):
-    """Multi-Day Swing Strategy (Hold 2-10 Days): Support Floor + Volume Absorption."""
+    """Multi-Day Swing Strategy (Hold 2-10 Days): 40D Support Floor + Volume Absorption."""
     if df_daily is None or len(df_daily) < 40:
         return 0.0, "Insufficient history", "N/A"
 
@@ -80,7 +103,7 @@ def calculate_swing_score(df_daily):
 
     if vol_today > (vol_20d_avg * 1.2) and body_size < atr14:
         score += 1.5
-        tags.append("Volume Absorption")
+        tags.append("Kinetic Volume Absorption")
 
     sma20 = df_daily["Close"].rolling(20).mean().iloc[-1]
     std20 = df_daily["Close"].rolling(20).std().iloc[-1]
@@ -88,7 +111,7 @@ def calculate_swing_score(df_daily):
 
     if close_p <= lower_band * 1.02:
         score += 1.5
-        tags.append("Lower BB Expansion")
+        tags.append("Bollinger Lower Expansion Touch")
 
     buy_zone = f"{round(close_p * 0.98, 2)} - {round(close_p * 1.01, 2)}"
     reason = " + ".join(tags) if tags else "No swing confluence"
@@ -114,17 +137,17 @@ def calculate_btst_score(df_daily):
     clr = (close_p - low_p) / (high_p - low_p) if (high_p - low_p) > 0 else 0
     if clr >= 0.85:
         score += 1.5
-        tags.append("Near HOD Close")
+        tags.append("Close Near HOD")
     elif clr >= 0.70:
         score += 0.75
-        tags.append("Strong Close")
+        tags.append("Strong Close Position")
 
     vol_10d_avg = df_daily["Volume"].iloc[-11:-1].mean()
     rvol = vol_today / vol_10d_avg if vol_10d_avg > 0 else 0
 
     if rvol >= 1.8:
         score += 1.5
-        tags.append(f"Vol Spike ({rvol:.1f}x)")
+        tags.append(f"Institutional Vol Surge ({rvol:.1f}x)")
     elif rvol >= 1.3:
         score += 0.75
         tags.append(f"Above Avg Vol ({rvol:.1f}x)")
@@ -146,9 +169,10 @@ def calculate_btst_score(df_daily):
 
 
 # ==========================================
-# 4. KSE-100 SCANNER ENGINE
+# 4. RESILIENT FULL MARKET SCANNER ENGINE
 # ==========================================
-def process_dataframe(df, ticker_code):
+def process_single_dataframe(df, clean_code, min_volume=10000):
+    """Processes stock dataframe, applies liquidity filter, and calculates scores."""
     try:
         if df.empty or len(df) < 15:
             return None
@@ -156,11 +180,15 @@ def process_dataframe(df, ticker_code):
         curr_close = float(df["Close"].iloc[-1])
         curr_vol = int(df["Volume"].iloc[-1])
 
+        # Liquidity Safeguard for Small-Caps / Non-KSE100 Stocks
+        if curr_vol < min_volume:
+            return None
+
         s_score, s_reason, s_buy = calculate_swing_score(df)
         b_score, b_reason, b_buy = calculate_btst_score(df)
 
         return {
-            "Ticker": ticker_code,
+            "Ticker": clean_code,
             "Close": round(curr_close, 2),
             "Volume": curr_vol,
             "Swing_Score": round(s_score, 1),
@@ -174,7 +202,7 @@ def process_dataframe(df, ticker_code):
         return None
 
 
-def run_kse100_scan(tickers):
+def run_full_psx_scan(tickers, min_volume):
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -199,13 +227,14 @@ def run_kse100_scan(tickers):
                     else:
                         df = data[sym].dropna()
 
-                    res = process_dataframe(df, clean_code)
+                    res = process_single_dataframe(df, clean_code, min_volume)
                     if res:
                         results.append(res)
                 except Exception:
+                    # Single-ticker fallback isolation
                     try:
                         single_df = yf.Ticker(sym).history(period="60d")
-                        res = process_dataframe(single_df, clean_code)
+                        res = process_single_dataframe(single_df, clean_code, min_volume)
                         if res:
                             results.append(res)
                     except Exception:
@@ -215,7 +244,7 @@ def run_kse100_scan(tickers):
 
         percent = min(int(((i + batch_size) / total) * 100), 100)
         progress_bar.progress(percent)
-        status_text.text(f"Scanning KSE-100 Benchmark Universe: {min(i + batch_size, total)}/{total} stocks processed")
+        status_text.text(f"Scanning Full PSX Market Universe: {min(i + batch_size, total)}/{total} stocks processed")
 
     status_text.empty()
     progress_bar.empty()
@@ -223,21 +252,32 @@ def run_kse100_scan(tickers):
 
 
 # ==========================================
-# 5. STREAMLIT INTERFACE
+# 5. STREAMLIT INTERFACE & ROUTING
 # ==========================================
-st.sidebar.title("🇵🇰 PSX KSE-100 Engine")
+st.sidebar.title("🇵🇰 PSX Full Quant Engine")
 
 strategy_view = st.sidebar.radio(
     "Select Mode:",
     [
-        "⚡ BTST / Overnight (Free Feed)",
-        "📈 Multi-Day Swing (EOD)",
+        "⚡ BTST / Overnight Setups",
+        "📈 Multi-Day Swing Setups (2–10 Days)",
         "🔍 Single Stock Search & Analysis",
     ],
 )
 
 st.sidebar.divider()
 
+# Liquidity Filter Control
+min_vol_input = st.sidebar.number_input(
+    "Minimum Daily Volume Filter:",
+    value=25000,
+    step=10000,
+    help="Filters out illiquid penny or non-traded stocks to prevent high slippage.",
+)
+
+st.sidebar.divider()
+
+# Portfolio Manager
 st.sidebar.markdown("### 💼 My Portfolio Manager")
 edited_pf = st.sidebar.data_editor(
     st.session_state["portfolio"],
@@ -249,17 +289,17 @@ st.session_state["portfolio"] = edited_pf
 
 st.sidebar.divider()
 
-if st.sidebar.button("🚀 Scan KSE-100 Index", type="primary"):
-    ticker_list = get_kse100_tickers()
-    st.session_state["scan_data"] = run_kse100_scan(ticker_list)
+if st.sidebar.button("🚀 Scan Entire PSX Market", type="primary"):
+    ticker_list = get_full_psx_universe()
+    st.session_state["scan_data"] = run_full_psx_scan(ticker_list, min_vol_input)
     st.session_state["scanned_count"] = len(st.session_state["scan_data"])
     st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
 
-st.title("PSX KSE-100 Quantitative Scanner")
+st.title("PSX Whole Market Quantitative Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Scanned KSE-100 Tickers: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Scanned Liquid Stocks: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
@@ -276,6 +316,7 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
                     [
                         "Ticker",
                         "Close",
+                        "Volume",
                         "BTST_Score",
                         "BTST_Buy_Zone",
                         "Swing_Score",
@@ -286,12 +327,12 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
             )
 
 # MODE 1: BTST STRATEGY
-if strategy_view == "⚡ BTST / Overnight (Free Feed)":
-    st.header("⚡ BTST Overnight Candidates (Buy Today 3:15 PM)")
-    st.caption("Filters for late-session volume spikes and high CLR close pressure. **Threshold: Score ≥ 3.0**")
+if strategy_view == "⚡ BTST / Overnight Setups":
+    st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow)")
+    st.caption("Filters all PSX stocks for late-session volume spikes and close pressure. **Threshold: Score ≥ 3.0**")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
-        st.info("Click **'Scan KSE-100 Index'** in the sidebar to initiate.")
+        st.info("Click **'Scan Entire PSX Market'** in the sidebar to initiate the scan.")
     else:
         btst_df = df_raw[df_raw["BTST_Score"] >= 3.0].copy()
 
@@ -304,6 +345,7 @@ if strategy_view == "⚡ BTST / Overnight (Free Feed)":
                     [
                         "Ticker",
                         "Close",
+                        "Volume",
                         "BTST_Buy_Zone",
                         "Target (+3.0%)",
                         "Stop Loss (-1.8%)",
@@ -314,15 +356,15 @@ if strategy_view == "⚡ BTST / Overnight (Free Feed)":
                 use_container_width=True,
             )
         else:
-            st.info("No KSE-100 stocks currently cross the BTST Threshold (Score ≥ 3.0).")
+            st.info("No PSX stocks currently cross the BTST Threshold (Score ≥ 3.0).")
 
-# MODE 2: SWING STRATEGY (2-10 DAYS)
-elif strategy_view == "📈 Multi-Day Swing (EOD)":
-    st.header("📈 Swing Trade Setups (2–10 Days Holding)")
-    st.caption("Filters for 40-day support floors and volume absorption. **Threshold: Score ≥ 3.0**")
+# MODE 2: MULTI-DAY SWING STRATEGY
+elif strategy_view == "📈 Multi-Day Swing Setups (2–10 Days)":
+    st.header("📈 Swing Trade Setups (2–10 Days Holding Horizon)")
+    st.caption("Scans whole PSX market for 40-day support floors and volume absorption. **Threshold: Score ≥ 3.0**")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
-        st.info("Click **'Scan KSE-100 Index'** in the sidebar to initiate.")
+        st.info("Click **'Scan Entire PSX Market'** in the sidebar to initiate the scan.")
     else:
         swing_df = df_raw[df_raw["Swing_Score"] >= 3.0].copy()
 
@@ -335,6 +377,7 @@ elif strategy_view == "📈 Multi-Day Swing (EOD)":
                     [
                         "Ticker",
                         "Close",
+                        "Volume",
                         "Swing_Buy_Zone",
                         "Target (+8.5%)",
                         "Stop Loss (-4.5%)",
@@ -345,20 +388,20 @@ elif strategy_view == "📈 Multi-Day Swing (EOD)":
                 use_container_width=True,
             )
         else:
-            st.warning("No KSE-100 stocks currently cross the Swing Threshold (Score ≥ 3.0).")
+            st.warning("No PSX stocks currently cross the Swing Threshold (Score ≥ 3.0).")
 
-# MODE 3: INDIVIDUAL SEARCH
+# MODE 3: SINGLE STOCK SEARCH
 elif strategy_view == "🔍 Single Stock Search & Analysis":
-    st.header("🔍 Individual Stock Lookup")
+    st.header("🔍 Individual PSX Stock Analysis")
 
-    search_input = st.text_input("Enter PSX Symbol (e.g., SYS, ASL, LUCK, TRG):", "SYS")
+    search_input = st.text_input("Enter ANY PSX Ticker (e.g., BUXL, PAEL, SYS, ASL, ARCH):", "BUXL")
 
     if search_input:
         symbol = f"{search_input.strip().upper()}.KA"
         with st.spinner(f"Analyzing {symbol}..."):
             try:
                 single_df = yf.Ticker(symbol).history(period="60d")
-                res = process_dataframe(single_df, search_input.strip().upper())
+                res = process_single_dataframe(single_df, search_input.strip().upper(), min_volume=0)
 
                 if res:
                     c1, c2, c3 = st.columns(3)
@@ -383,18 +426,19 @@ elif strategy_view == "🔍 Single Stock Search & Analysis":
                         st.write(f"**Stop Loss (-4.5%):** PKR {round(res['Close'] * 0.955, 2)}")
                         st.info(f"**Reasoning:** {res['Swing_Reason']}")
                 else:
-                    st.error(f"Could not retrieve historical data for '{search_input}'.")
+                    st.error(f"Could not fetch historical data for '{search_input}'.")
             except Exception as e:
                 st.error(f"Error executing lookup: {str(e)}")
 
-# Complete Overview
+# Master Overview
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
-    with st.expander("📋 View Complete KSE-100 Market Analysis"):
+    with st.expander("📋 View Complete Scanned PSX Universe (All Tickers)"):
         st.dataframe(
             df_raw[
                 [
                     "Ticker",
                     "Close",
+                    "Volume",
                     "BTST_Score",
                     "BTST_Buy_Zone",
                     "BTST_Reason",
@@ -404,5 +448,5 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
                 ]
             ],
             use_container_width=True,
-        )
+)
         
