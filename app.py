@@ -1,4 +1,3 @@
-import concurrent.futures
 import time
 import pandas as pd
 import requests
@@ -9,7 +8,7 @@ import yfinance as yf
 # 1. PAGE SETUP & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="PSX Full Market Quant Scanner",
+    page_title="PSX Whole Market Quant Scanner",
     page_icon="🇵🇰",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -35,11 +34,11 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. DYNAMIC FULL PSX UNIVERSE (300+ STOCKS)
+# 2. DYNAMIC FULL PSX UNIVERSE (DYNAMIC + FALLBACK)
 # ==========================================
 @st.cache_data(ttl=43200)
 def get_full_psx_universe():
-    """Dynamically fetches all active PSX symbols from DPS API + extensive hardcoded universe."""
+    """Fetches active PSX traded equities dynamically from DPS API + static master list."""
     master_list = [
         # Commercial Banks & Financials
         "MCB", "UBL", "MEBL", "HBL", "BAFL", "BOP", "FABL", "AKBL", "NBP", "BIPL", "SNBL", "JSBL", "SPL", "SILK",
@@ -171,7 +170,7 @@ def calculate_btst_score(df_daily):
 # ==========================================
 # 4. RESILIENT FULL MARKET SCANNER ENGINE
 # ==========================================
-def process_single_dataframe(df, clean_code, min_volume=10000):
+def process_single_dataframe(df, clean_code, min_volume=25000):
     """Processes stock dataframe, applies liquidity filter, and calculates scores."""
     try:
         if df.empty or len(df) < 15:
@@ -180,7 +179,7 @@ def process_single_dataframe(df, clean_code, min_volume=10000):
         curr_close = float(df["Close"].iloc[-1])
         curr_vol = int(df["Volume"].iloc[-1])
 
-        # Liquidity Safeguard for Small-Caps / Non-KSE100 Stocks
+        # Liquidity Safeguard for Small-Caps
         if curr_vol < min_volume:
             return None
 
@@ -207,7 +206,7 @@ def run_full_psx_scan(tickers, min_volume):
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    batch_size = 25
+    batch_size = 20
     total = len(tickers)
 
     for i in range(0, total, batch_size):
@@ -231,7 +230,7 @@ def run_full_psx_scan(tickers, min_volume):
                     if res:
                         results.append(res)
                 except Exception:
-                    # Single-ticker fallback isolation
+                    # Single-ticker fallback isolation loop
                     try:
                         single_df = yf.Ticker(sym).history(period="60d")
                         res = process_single_dataframe(single_df, clean_code, min_volume)
@@ -267,7 +266,6 @@ strategy_view = st.sidebar.radio(
 
 st.sidebar.divider()
 
-# Liquidity Filter Control
 min_vol_input = st.sidebar.number_input(
     "Minimum Daily Volume Filter:",
     value=25000,
@@ -277,7 +275,6 @@ min_vol_input = st.sidebar.number_input(
 
 st.sidebar.divider()
 
-# Portfolio Manager
 st.sidebar.markdown("### 💼 My Portfolio Manager")
 edited_pf = st.sidebar.data_editor(
     st.session_state["portfolio"],
@@ -299,7 +296,7 @@ st.title("PSX Whole Market Quantitative Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Scanned Liquid Stocks: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Scanned Active Stocks: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
@@ -448,5 +445,4 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
                 ]
             ],
             use_container_width=True,
-)
-        
+        )
