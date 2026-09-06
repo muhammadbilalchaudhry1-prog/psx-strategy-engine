@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom Styling
+# Custom CSS Styling (Fixed: unsafe_allow_html)
 st.markdown(
     """
     <style>
@@ -24,7 +24,7 @@ st.markdown(
     .stMetric { background-color: #0f172a; border-radius: 8px; padding: 10px; border: 1px solid #1e293b; }
     </style>
 """,
-    unsafe_allow_dict=True,
+    unsafe_allow_html=True,
 )
 
 
@@ -361,5 +361,5 @@ else:
                 ]
             ],
             use_container_width=True,
-    )
-            
+        )
+        
