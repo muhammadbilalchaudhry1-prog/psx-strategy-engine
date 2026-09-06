@@ -1,7 +1,7 @@
 import time
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+from curl_cffi import requests as crequests
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
@@ -24,58 +24,38 @@ st.markdown(
 )
 
 if "portfolio" not in st.session_state:
-    st.session_state["portfolio"] = pd.DataFrame([
-        {"Symbol": "SYS", "Avg Price": 129.00, "Shares": 1000},
-        {"Symbol": "ASL", "Avg Price": 16.95, "Shares": 5000},
-        {"Symbol": "CLVL", "Avg Price": 12.50, "Shares": 2000},
-    ])
+    st.session_state["portfolio"] = pd.DataFrame(
+        [
+            {"Symbol": "SYS", "Avg Price": 129.00, "Shares": 1000},
+            {"Symbol": "ASL", "Avg Price": 16.95, "Shares": 5000},
+            {"Symbol": "CLVL", "Avg Price": 12.50, "Shares": 2000},
+        ]
+    )
 
 
 # ==========================================
-# 2. CLIENT-SIDE BROWSER FETCHER (BYPASSES CLOUD BLOCKS)
+# 2. IMPERSONATED BROWSER FETCH ENGINE
 # ==========================================
-def render_browser_fetcher():
-    """Renders a hidden JavaScript bridge that fetches market data directly from the user's browser."""
-    js_code = """
-    <script>
-    async function fetchPSXData() {
-        const endpoints = [
-            'https://dps.psx.com.pk/data/summary',
-            'https://api.allorigins.win/raw?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary'
-        ];
-        
-        for (let url of endpoints) {
-            try {
-                let response = await fetch(url);
-                if (response.ok) {
-                    let data = await response.json();
-                    if (Array.isArray(data) && data.length > 50) {
-                        // Pass fetched JSON directly back to Streamlit python state
-                        window.parent.postMessage({
-                            type: "streamlit:setComponentValue",
-                            value: JSON.stringify(data)
-                        }, "*");
-                        return;
-                    }
-                }
-            } catch (err) {
-                console.log("Endpoint failed, trying next...");
-            }
-        }
-        
-        window.parent.postMessage({
-            type: "streamlit:setComponentValue",
-            value: "ERROR"
-        }, "*");
-    }
-    fetchPSXData();
-    </script>
-    """
-    return components.html(js_code, height=0, width=0)
+def fetch_full_psx_market():
+    """Fetches full PSX summary by impersonating a real Chrome browser TLS fingerprint."""
+    url = "https://dps.psx.com.pk/data/summary"
+
+    try:
+        # Impersonate Chrome 120 browser TLS signature to pass Cloudflare/PSX WAF
+        response = crequests.get(url, impersonate="chrome120", timeout=12)
+
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and len(data) > 50:
+                return data
+    except Exception as e:
+        st.sidebar.error(f"Fetch Error: {str(e)}")
+
+    return []
 
 
 def process_market_summary(raw_summary, min_volume=0):
-    """Processes 500+ stocks into structured quant metrics."""
+    """Processes all 500+ stocks into quantitative scanner metrics."""
     records = []
 
     for item in raw_summary:
@@ -97,6 +77,7 @@ def process_market_summary(raw_summary, min_volume=0):
                 else 0.0
             )
 
+            # Apply volume filter (bypassed for Right Shares)
             if min_volume > 0 and vol < min_volume and not symbol.endswith("R"):
                 continue
 
@@ -196,35 +177,22 @@ st.session_state["portfolio"] = edited_pf
 st.sidebar.divider()
 
 if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
-    st.session_state["trigger_browser_fetch"] = True
-
-# Handle Client-Side Trigger
-if st.session_state.get("trigger_browser_fetch"):
-    import json
-
-    client_payload = render_browser_fetcher()
-
-    if client_payload:
-        if client_payload == "ERROR":
-            st.error("Failed to fetch market data from PSX.")
-            st.session_state["trigger_browser_fetch"] = False
+    with st.spinner(
+        "Bypassing Cloudflare WAF & fetching full PSX market summary..."
+    ):
+        raw_data = fetch_full_psx_market()
+        if raw_data:
+            st.session_state["scan_data"] = process_market_summary(
+                raw_data, min_vol_input
+            )
+            st.session_state["scanned_count"] = len(
+                st.session_state["scan_data"]
+            )
+            st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
         else:
-            try:
-                raw_json = json.loads(client_payload)
-                st.session_state["scan_data"] = process_market_summary(
-                    raw_json, min_vol_input
-                )
-                st.session_state["scanned_count"] = len(
-                    st.session_state["scan_data"]
-                )
-                st.session_state["last_scan_time"] = time.strftime(
-                    "%I:%M %p PKT"
-                )
-                st.session_state["trigger_browser_fetch"] = False
-                st.rerun()
-            except Exception:
-                st.error("Error processing browser payload.")
-                st.session_state["trigger_browser_fetch"] = False
+            st.error(
+                "Unable to fetch data. PSX endpoint unreachable from current IP."
+            )
 
 st.title("PSX All-Share Quant Scanner")
 
