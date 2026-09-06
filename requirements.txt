@@ -1,13 +1,3 @@
 streamlit
 pandas
 requests
-curl_cffi
-streamlit
-psxdata
-yfinance
-pandas
-numpy
-scipy
-requests
-beautifulsoup4
-plotly
