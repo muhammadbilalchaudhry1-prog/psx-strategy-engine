@@ -1,9 +1,7 @@
-import concurrent.futures
 import time
 import pandas as pd
 import requests
 import streamlit as st
-import yfinance as yf
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
@@ -36,33 +34,39 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. FAST SINGLE-FETCH FULL MARKET ENGINE
+# 2. BULLETPROOF MULTI-SOURCE PSX SCRAPER
 # ==========================================
-@st.cache_data(ttl=60)
 def fetch_full_psx_market():
-    """Fetches ALL listed PSX stocks and right shares in a SINGLE HTTP payload."""
+    """Fetches full market summary trying multiple endpoints and CORS proxies to bypass Cloud IP blocks."""
+
+    # List of endpoints & proxies to guarantee connection
+    urls = [
+        "https://dps.psx.com.pk/data/summary",
+        "https://api.allorigins.win/raw?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
+        "https://corsproxy.io/?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
+    ]
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://dps.psx.com.pk/",
     }
 
-    try:
-        res = requests.get(
-            "https://dps.psx.com.pk/data/summary", headers=headers, timeout=12
-        )
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                return data
-    except Exception:
-        pass
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 50:
+                    return data
+        except Exception:
+            continue
 
     return []
 
 
 def process_market_summary(raw_summary, min_volume=0):
-    """Parses raw market summary payload into structured quant analysis for all 500+ tickers."""
+    """Processes 500+ stocks into structured quant metrics."""
     records = []
 
     for item in raw_summary:
@@ -92,7 +96,6 @@ def process_market_summary(raw_summary, min_volume=0):
             btst_score = 0.0
             btst_tags = []
 
-            # Close Location Value (CLR) - High close preference
             clr = (
                 (close_p - low_p) / (high_p - low_p)
                 if (high_p - low_p) > 0
@@ -185,7 +188,7 @@ st.session_state["portfolio"] = edited_pf
 st.sidebar.divider()
 
 if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
-    with st.spinner("Fetching full PSX market summary..."):
+    with st.spinner("Bypassing server blocks & fetching PSX feed..."):
         raw_data = fetch_full_psx_market()
         if raw_data:
             st.session_state["scan_data"] = process_market_summary(
@@ -197,14 +200,14 @@ if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary")
             st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
         else:
             st.error(
-                "Unable to reach PSX servers. Please retry in a few seconds."
+                "PSX API is blocking Streamlit Cloud IP. Click retry or check connection."
             )
 
 st.title("PSX All-Share Quant Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Total PSX Active Tickers Captured: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Total Active Equities Captured: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
@@ -233,9 +236,7 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
 # MODE 1: BTST STRATEGY
 if strategy_view == "⚡ BTST / Overnight Setups":
     st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow)")
-    st.caption(
-        "Evaluates all 500+ equities, micro-caps, and LOR right shares."
-    )
+    st.caption("Evaluates all 500+ equities, micro-caps, and LOR right shares.")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
         st.info(
@@ -374,5 +375,5 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
                 "Swing_Reason",
             ]],
             use_container_width=True,
-            )
+        )
         
