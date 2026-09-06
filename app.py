@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import pandas as pd
 import requests
@@ -36,27 +37,30 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. MULTI-FALLBACK PSX FETCH ENGINE
+# 2. HYBRID FETCH ENGINE (LOCAL JSON + ONLINE FALLBACK)
 # ==========================================
 def fetch_full_psx_market():
-    """Fetches full PSX summary by rotating through TLS impersonation and proxy gateways."""
+    """First checks repository sync JSON, then falls back to direct endpoints."""
+    # Priority 1: GitHub Actions auto-synced JSON snapshot
+    if os.path.exists("psx_data.json"):
+        try:
+            with open("psx_data.json", "r") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 50:
+                    return data, "GitHub Actions Pipeline (Cached)"
+        except Exception:
+            pass
+
+    # Priority 2: Direct Fallback
     sources = [
-        # Option 1: Direct PSX via Chrome TLS impersonation
         (
             "direct",
             "https://dps.psx.com.pk/data/summary",
             {"impersonate": "chrome120"},
         ),
-        # Option 2: AllOrigins Proxy
         (
             "proxy",
             "https://api.allorigins.win/get?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
-            {},
-        ),
-        # Option 3: Corsproxy Gateway
-        (
-            "proxy_alt",
-            "https://corsproxy.io/?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
             {},
         ),
     ]
@@ -65,31 +69,23 @@ def fetch_full_psx_market():
         try:
             if mode == "direct":
                 res = crequests.get(url, timeout=10, **kwargs)
-                if res.status_code == 200:
-                    data = res.json()
-                    if isinstance(data, list) and len(data) > 50:
-                        return data
+                if res.status_code == 200 and len(res.json()) > 50:
+                    return res.json(), "Direct Endpoint"
             else:
-                res = requests.get(url, timeout=12)
+                res = requests.get(url, timeout=10)
                 if res.status_code == 200:
                     payload = res.json()
-
-                    if "contents" in payload:
-                        raw_contents = payload["contents"]
-                        data = (
-                            json.loads(raw_contents)
-                            if isinstance(raw_contents, str)
-                            else raw_contents
-                        )
-                    else:
-                        data = payload
-
+                    data = (
+                        json.loads(payload["contents"])
+                        if "contents" in payload
+                        else payload
+                    )
                     if isinstance(data, list) and len(data) > 50:
-                        return data
+                        return data, "Proxy Gateway"
         except Exception:
             continue
 
-    return []
+    return [], "Failed"
 
 
 def process_market_summary(raw_summary, min_volume=0):
@@ -115,7 +111,6 @@ def process_market_summary(raw_summary, min_volume=0):
                 else 0.0
             )
 
-            # Volume filter logic (bypassed for Right Shares ending with 'R')
             if min_volume > 0 and vol < min_volume and not symbol.endswith("R"):
                 continue
 
@@ -215,10 +210,8 @@ st.session_state["portfolio"] = edited_pf
 st.sidebar.divider()
 
 if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
-    with st.spinner(
-        "Bypassing Cloudflare WAF & fetching full PSX market summary..."
-    ):
-        raw_data = fetch_full_psx_market()
+    with st.spinner("Loading PSX market summary..."):
+        raw_data, source_name = fetch_full_psx_market()
         if raw_data:
             st.session_state["scan_data"] = process_market_summary(
                 raw_data, min_vol_input
@@ -227,16 +220,15 @@ if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary")
                 st.session_state["scan_data"]
             )
             st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
+            st.session_state["source_used"] = source_name
         else:
-            st.error(
-                "Unable to fetch data. PSX endpoint unreachable from current IP."
-            )
+            st.error("Unable to load data snapshot.")
 
 st.title("PSX All-Share Quant Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Total Active Equities Captured: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Source: **{st.session_state.get('source_used', 'N/A')}** | Active Equities: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
