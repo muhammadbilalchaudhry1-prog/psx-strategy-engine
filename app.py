@@ -1,7 +1,7 @@
 import time
 import pandas as pd
-import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
@@ -24,45 +24,54 @@ st.markdown(
 )
 
 if "portfolio" not in st.session_state:
-    st.session_state["portfolio"] = pd.DataFrame(
-        [
-            {"Symbol": "SYS", "Avg Price": 129.00, "Shares": 1000},
-            {"Symbol": "ASL", "Avg Price": 16.95, "Shares": 5000},
-            {"Symbol": "CLVL", "Avg Price": 12.50, "Shares": 2000},
-        ]
-    )
+    st.session_state["portfolio"] = pd.DataFrame([
+        {"Symbol": "SYS", "Avg Price": 129.00, "Shares": 1000},
+        {"Symbol": "ASL", "Avg Price": 16.95, "Shares": 5000},
+        {"Symbol": "CLVL", "Avg Price": 12.50, "Shares": 2000},
+    ])
 
 
 # ==========================================
-# 2. BULLETPROOF MULTI-SOURCE PSX SCRAPER
+# 2. CLIENT-SIDE BROWSER FETCHER (BYPASSES CLOUD BLOCKS)
 # ==========================================
-def fetch_full_psx_market():
-    """Fetches full market summary trying multiple endpoints and CORS proxies to bypass Cloud IP blocks."""
-
-    # List of endpoints & proxies to guarantee connection
-    urls = [
-        "https://dps.psx.com.pk/data/summary",
-        "https://api.allorigins.win/raw?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
-        "https://corsproxy.io/?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
-    ]
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://dps.psx.com.pk/",
+def render_browser_fetcher():
+    """Renders a hidden JavaScript bridge that fetches market data directly from the user's browser."""
+    js_code = """
+    <script>
+    async function fetchPSXData() {
+        const endpoints = [
+            'https://dps.psx.com.pk/data/summary',
+            'https://api.allorigins.win/raw?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary'
+        ];
+        
+        for (let url of endpoints) {
+            try {
+                let response = await fetch(url);
+                if (response.ok) {
+                    let data = await response.json();
+                    if (Array.isArray(data) && data.length > 50) {
+                        // Pass fetched JSON directly back to Streamlit python state
+                        window.parent.postMessage({
+                            type: "streamlit:setComponentValue",
+                            value: JSON.stringify(data)
+                        }, "*");
+                        return;
+                    }
+                }
+            } catch (err) {
+                console.log("Endpoint failed, trying next...");
+            }
+        }
+        
+        window.parent.postMessage({
+            type: "streamlit:setComponentValue",
+            value: "ERROR"
+        }, "*");
     }
-
-    for url in urls:
-        try:
-            res = requests.get(url, headers=headers, timeout=8)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list) and len(data) > 50:
-                    return data
-        except Exception:
-            continue
-
-    return []
+    fetchPSXData();
+    </script>
+    """
+    return components.html(js_code, height=0, width=0)
 
 
 def process_market_summary(raw_summary, min_volume=0):
@@ -88,7 +97,6 @@ def process_market_summary(raw_summary, min_volume=0):
                 else 0.0
             )
 
-            # Apply volume filter, bypass for right shares (ending in R)
             if min_volume > 0 and vol < min_volume and not symbol.endswith("R"):
                 continue
 
@@ -188,20 +196,35 @@ st.session_state["portfolio"] = edited_pf
 st.sidebar.divider()
 
 if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
-    with st.spinner("Bypassing server blocks & fetching PSX feed..."):
-        raw_data = fetch_full_psx_market()
-        if raw_data:
-            st.session_state["scan_data"] = process_market_summary(
-                raw_data, min_vol_input
-            )
-            st.session_state["scanned_count"] = len(
-                st.session_state["scan_data"]
-            )
-            st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
+    st.session_state["trigger_browser_fetch"] = True
+
+# Handle Client-Side Trigger
+if st.session_state.get("trigger_browser_fetch"):
+    import json
+
+    client_payload = render_browser_fetcher()
+
+    if client_payload:
+        if client_payload == "ERROR":
+            st.error("Failed to fetch market data from PSX.")
+            st.session_state["trigger_browser_fetch"] = False
         else:
-            st.error(
-                "PSX API is blocking Streamlit Cloud IP. Click retry or check connection."
-            )
+            try:
+                raw_json = json.loads(client_payload)
+                st.session_state["scan_data"] = process_market_summary(
+                    raw_json, min_vol_input
+                )
+                st.session_state["scanned_count"] = len(
+                    st.session_state["scan_data"]
+                )
+                st.session_state["last_scan_time"] = time.strftime(
+                    "%I:%M %p PKT"
+                )
+                st.session_state["trigger_browser_fetch"] = False
+                st.rerun()
+            except Exception:
+                st.error("Error processing browser payload.")
+                st.session_state["trigger_browser_fetch"] = False
 
 st.title("PSX All-Share Quant Scanner")
 
