@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS Styling (Fixed: unsafe_allow_html)
+# Custom CSS Styling
 st.markdown(
     """
     <style>
@@ -27,13 +27,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Initialize Portfolio in Session State if not present
+if "portfolio" not in st.session_state:
+    st.session_state["portfolio"] = pd.DataFrame(
+        [
+            {"Symbol": "SYS", "Avg Price": 129.00, "Shares": 1000},
+            {"Symbol": "ASL", "Avg Price": 16.95, "Shares": 5000},
+        ]
+    )
+
 
 # ==========================================
-# 2. TICKER LIST RETRIEVAL (FREE PSX SCRAPER)
+# 2. TICKER LIST RETRIEVAL (FULL PSX MARKET)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_psx_tickers():
-    """Fetches free active symbols directly from PSX Data Portal."""
+    """Fetches ALL active symbols directly from PSX Data Portal."""
     url = "https://dps.psx.com.pk/data/summary"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -44,8 +53,9 @@ def get_psx_tickers():
         if response.status_code == 200:
             df = pd.DataFrame(response.json())
             symbols = df["code"].tolist()
+            # Returns ALL valid symbols (Scans entire ~500+ stock universe)
             yf_symbols = [f"{sym}.KA" for sym in symbols if str(sym).isalnum()]
-            return yf_symbols[:150]  # Scans top 150 liquid symbols
+            return yf_symbols
     except Exception:
         pass
 
@@ -99,9 +109,7 @@ def calculate_swing_score(df_daily):
     # B. Kinetic Absorption Force (Volume & Volatility Compression)
     vol_20d_avg = df_daily["Volume"].tail(20).mean()
     vol_today = float(last_bar["Volume"])
-    atr14 = (
-        (df_daily["High"] - df_daily["Low"]).rolling(14).mean().iloc[-1]
-    )  # Basic ATR proxy
+    atr14 = (df_daily["High"] - df_daily["Low"]).rolling(14).mean().iloc[-1]
     body_size = abs(close_p - float(last_bar["Open"]))
 
     if vol_today > (vol_20d_avg * 1.2) and body_size < atr14:
@@ -178,7 +186,7 @@ def calculate_btst_score(df_daily):
 
 def process_single_ticker(symbol):
     """Worker function to fetch data and process both scoring engines."""
-    clean_code = symbol.replace(".KA", "")
+    clean_code = symbol.replace(".KA", "").upper()
     try:
         ticker_obj = yf.Ticker(symbol)
         df = ticker_obj.history(period="60d")
@@ -207,14 +215,15 @@ def process_single_ticker(symbol):
 
 
 def run_full_market_scan(tickers):
-    """Executes multi-threaded processing across all tickers."""
+    """Executes multi-threaded processing across all PSX tickers."""
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
 
     total = len(tickers)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Scans all ~500 stocks faster with 20 threads
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         future_to_ticker = {
             executor.submit(process_single_ticker, sym): sym for sym in tickers
         }
@@ -226,10 +235,9 @@ def run_full_market_scan(tickers):
             if res:
                 results.append(res)
 
-            # Update Streamlit progress
             percent = int(((i + 1) / total) * 100)
             progress_bar.progress(percent)
-            status_text.text(f"Scanning PSX Universe: {i + 1}/{total} completed")
+            status_text.text(f"Scanning Full PSX Universe: {i + 1}/{total} stocks")
 
     status_text.empty()
     progress_bar.empty()
@@ -245,16 +253,29 @@ st.sidebar.title("🇵🇰 PSX Quant Engine")
 st.sidebar.caption("Free Data Pipeline • Multi-Strategy Scanner")
 
 strategy_view = st.sidebar.radio(
-    "Select Trading Mode:",
-    ["📈 Multi-Day Swing (EOD)", "⚡ BTST / Overnight (Free Feed)"],
+    "Select Mode:",
+    [
+        "📈 Multi-Day Swing (EOD)",
+        "⚡ BTST / Overnight (Free Feed)",
+        "🔍 Single Stock Search & Analysis",
+    ],
 )
 
 st.sidebar.divider()
-st.sidebar.markdown("**Portfolio Quick Check**")
-st.sidebar.write("• **SYS** (Avg: 129.00)")
-st.sidebar.write("• **ASL** (Avg: 16.95)")
 
-if st.sidebar.button("🚀 Run Market Scan", type="primary"):
+# Editable Portfolio Module
+st.sidebar.markdown("### 💼 My Portfolio Manager")
+edited_pf = st.sidebar.data_editor(
+    st.session_state["portfolio"],
+    num_rows="dynamic",
+    use_container_width=True,
+    key="pf_editor",
+)
+st.session_state["portfolio"] = edited_pf
+
+st.sidebar.divider()
+
+if st.sidebar.button("🚀 Run Full Market Scan", type="primary"):
     ticker_list = get_psx_tickers()
     st.session_state["scan_data"] = run_full_market_scan(ticker_list)
     st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
@@ -265,20 +286,47 @@ st.title("PSX Quantitative Trading Dashboard")
 if "last_scan_time" in st.session_state:
     st.caption(f"Last Scan Executed at: **{st.session_state['last_scan_time']}**")
 
-if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
-    st.info(
-        "Click **'Run Market Scan'** in the sidebar to fetch free daily market data and compute dual scores."
-    )
-else:
+# Portfolio Analysis Banner if Scan Data Exists
+if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
     df_raw = st.session_state["scan_data"]
 
-    # VIEW 1: MULTI-DAY SWING MODE
-    if strategy_view == "📈 Multi-Day Swing (EOD)":
-        st.header("📈 Multi-Day Swing Setups (Hold 2–10 Days)")
-        st.write(
-            "Identifies structural support floors and kinetic volume absorption. **Threshold: Score ≥ 3.0**"
-        )
+    # Check Portfolio Holdings against Market Scan
+    user_symbols = [
+        str(s).upper() for s in st.session_state["portfolio"]["Symbol"].dropna()
+    ]
+    pf_matches = df_raw[df_raw["Ticker"].isin(user_symbols)].copy()
 
+    if not pf_matches.empty:
+        with st.expander(
+            "💼 Portfolio Analysis & Current Setup Status", expanded=True
+        ):
+            st.dataframe(
+                pf_matches[
+                    [
+                        "Ticker",
+                        "Close",
+                        "Swing_Score",
+                        "BTST_Score",
+                        "Swing_Reasons",
+                        "BTST_Reasons",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
+# ROUTE 1: MULTI-DAY SWING MODE
+if strategy_view == "📈 Multi-Day Swing (EOD)":
+    st.header("📈 Multi-Day Swing Setups (Hold 2–10 Days)")
+    st.write(
+        "Identifies structural support floors and kinetic volume absorption. **Threshold: Score ≥ 3.0**"
+    )
+
+    if (
+        "scan_data" not in st.session_state
+        or st.session_state["scan_data"].empty
+    ):
+        st.info("Click **'Run Full Market Scan'** in the sidebar to fetch data.")
+    else:
         swing_df = df_raw[df_raw["Swing_Score"] >= 3.0].copy()
 
         if not swing_df.empty:
@@ -304,17 +352,21 @@ else:
                 use_container_width=True,
             )
         else:
-            st.warning(
-                "No stocks currently cross the Swing Threshold (Score ≥ 3.0). Market may be overextended or breaking structural floors."
-            )
+            st.warning("No stocks currently cross Swing Threshold (Score ≥ 3.0).")
 
-    # VIEW 2: BTST OVERNIGHT MODE
-    elif strategy_view == "⚡ BTST / Overnight (Free Feed)":
-        st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow 10:00 AM)")
-        st.caption(
-            "Identifies late-session volume expansion and High-of-Day closes. **Optimal execution window: 2:45 PM – 3:15 PM PKT**."
-        )
+# ROUTE 2: BTST OVERNIGHT MODE
+elif strategy_view == "⚡ BTST / Overnight (Free Feed)":
+    st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow 10:00 AM)")
+    st.caption(
+        "Identifies late-session volume expansion and HOD closes. **Optimal window: 2:45 PM – 3:15 PM PKT**."
+    )
 
+    if (
+        "scan_data" not in st.session_state
+        or st.session_state["scan_data"].empty
+    ):
+        st.info("Click **'Run Full Market Scan'** in the sidebar to fetch data.")
+    else:
         btst_df = df_raw[df_raw["BTST_Score"] >= 3.0].copy()
 
         if not btst_df.empty:
@@ -346,7 +398,58 @@ else:
                 "No tickers meet the BTST confluence threshold (Score ≥ 3.0) right now."
             )
 
-    # Bottom Full Universe Reference
+# ROUTE 3: SINGLE STOCK SEARCH & ANALYSIS
+elif strategy_view == "🔍 Single Stock Search & Analysis":
+    st.header("🔍 Individual Stock Technical Lookup")
+    st.write(
+        "Analyze any stock on the Pakistan Stock Exchange instantly without running a full market scan."
+    )
+
+    search_input = st.text_input(
+        "Enter PSX Symbol (e.g., SYS, ASL, LUCK, TRG):", "SYS"
+    )
+
+    if search_input:
+        symbol = f"{search_input.strip().upper()}.KA"
+        with st.spinner(f"Analyzing {symbol}..."):
+            stock_result = process_single_ticker(symbol)
+
+        if stock_result:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Current Price", f"PKR {stock_result['Close']}")
+            col2.metric("Daily Volume", f"{stock_result['Volume']:,}")
+            col3.metric("Swing Score", f"{stock_result['Swing_Score']} / 5.0")
+            col4.metric("BTST Score", f"{stock_result['BTST_Score']} / 5.0")
+
+            st.divider()
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("📈 Swing Strategy Details")
+                st.write(
+                    f"**Target (+8.5%):** PKR {round(stock_result['Close'] * 1.085, 2)}"
+                )
+                st.write(
+                    f"**Stop Loss (-4.5%):** PKR {round(stock_result['Close'] * 0.955, 2)}"
+                )
+                st.info(f"**Reasons:** {stock_result['Swing_Reasons']}")
+
+            with c2:
+                st.subheader("⚡ BTST Strategy Details")
+                st.write(
+                    f"**BTST Target (+3.0%):** PKR {round(stock_result['Close'] * 1.03, 2)}"
+                )
+                st.write(
+                    f"**BTST Stop Loss (-1.8%):** PKR {round(stock_result['Close'] * 0.982, 2)}"
+                )
+                st.info(f"**Reasons:** {stock_result['BTST_Reasons']}")
+        else:
+            st.error(
+                f"Could not fetch data for symbol '{search_input}'. Please check the symbol and try again."
+            )
+
+# Bottom Reference Table (if scan executed)
+if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
     with st.expander("📋 View Complete Market Analysis (All Scanned Tickers)"):
         st.dataframe(
             df_raw[
@@ -361,5 +464,5 @@ else:
                 ]
             ],
             use_container_width=True,
-        )
+    )
         
