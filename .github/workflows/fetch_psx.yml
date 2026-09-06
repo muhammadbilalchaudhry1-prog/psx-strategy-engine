@@ -13,36 +13,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Fetcher Dependencies
+      - name: Install Dependencies
         run: pip install requests curl_cffi pandas
 
-      - name: Fetch PSX Summary & Convert to CSV
+      - name: Fetch PSX Summary & Save CSV
         run: |
-          python -c '
+          cat << 'EOF' > fetch.py
           import pandas as pd
           from curl_cffi import requests
 
           url = "https://dps.psx.com.pk/data/summary"
-          res = requests.get(url, impersonate="chrome120", timeout=15)
-
-          if res.status_code == 200:
-              data = res.json()
-              if isinstance(data, list) and len(data) > 50:
-                  df = pd.DataFrame(data)
-                  df.to_csv("psx_market_data.csv", index=False)
-                  print("PSX CSV successfully created with", len(df), "tickers.")
+          try:
+              res = requests.get(url, impersonate="chrome120", timeout=15)
+              if res.status_code == 200:
+                  data = res.json()
+                  if isinstance(data, list) and len(data) > 50:
+                      df = pd.DataFrame(data)
+                      df.to_csv("psx_market_data.csv", index=False)
+                      print(f"Successfully generated psx_market_data.csv with {len(df)} tickers.")
+                  else:
+                      raise Exception("Received empty or invalid JSON array.")
               else:
-                  raise Exception("Invalid dataset format received.")
-          else:
-              raise Exception(f"HTTP Error: {res.status_code}")
-          '
+                  raise Exception(f"PSX Server returned status code: {res.status_code}")
+          except Exception as e:
+              print(f"Error fetching PSX data: {str(e)}")
+              exit(1)
+          EOF
+          python fetch.py
 
       - name: Commit & Push CSV Snapshot
         run: |
@@ -51,4 +55,3 @@ jobs:
           git add psx_market_data.csv
           git commit -m "Auto-update PSX market CSV snapshot" || exit 0
           git push
-          
