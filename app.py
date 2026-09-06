@@ -1,16 +1,13 @@
-import json
 import os
 import time
 import pandas as pd
-import requests
 import streamlit as st
-from curl_cffi import requests as crequests
 
 # ==========================================
-# 1. PAGE CONFIG & STYLING
+# 1. PAGE CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="PSX Full Market Scanner",
+    page_title="PSX Quant Engine & Scanner",
     page_icon="🇵🇰",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -37,86 +34,74 @@ if "portfolio" not in st.session_state:
 
 
 # ==========================================
-# 2. HYBRID FETCH ENGINE (LOCAL JSON + ONLINE FALLBACK)
+# 2. LOCAL CSV DATA ENGINE
 # ==========================================
-def fetch_full_psx_market():
-    """First checks repository sync JSON, then falls back to direct endpoints."""
-    # Priority 1: GitHub Actions auto-synced JSON snapshot
-    if os.path.exists("psx_data.json"):
-        try:
-            with open("psx_data.json", "r") as f:
-                data = json.load(f)
-                if isinstance(data, list) and len(data) > 50:
-                    return data, "GitHub Actions Pipeline (Cached)"
-        except Exception:
-            pass
+def load_psx_csv():
+    """Loads and normalizes the synced PSX CSV snapshot file."""
+    csv_path = "psx_market_data.csv"
 
-    # Priority 2: Direct Fallback
-    sources = [
-        (
-            "direct",
-            "https://dps.psx.com.pk/data/summary",
-            {"impersonate": "chrome120"},
-        ),
-        (
-            "proxy",
-            "https://api.allorigins.win/get?url=https%3A%2F%2Fdps.psx.com.pk%2Fdata%2Fsummary",
-            {},
-        ),
-    ]
+    if not os.path.exists(csv_path):
+        return None, "CSV file not found in repository."
 
-    for mode, url, kwargs in sources:
-        try:
-            if mode == "direct":
-                res = crequests.get(url, timeout=10, **kwargs)
-                if res.status_code == 200 and len(res.json()) > 50:
-                    return res.json(), "Direct Endpoint"
-            else:
-                res = requests.get(url, timeout=10)
-                if res.status_code == 200:
-                    payload = res.json()
-                    data = (
-                        json.loads(payload["contents"])
-                        if "contents" in payload
-                        else payload
-                    )
-                    if isinstance(data, list) and len(data) > 50:
-                        return data, "Proxy Gateway"
-        except Exception:
-            continue
+    try:
+        df = pd.read_csv(csv_path)
 
-    return [], "Failed"
+        # Standardize PSX column mappings across market feeds
+        col_map = {
+            "code": "Ticker",
+            "symbol": "Ticker",
+            "close": "Close",
+            "current": "Close",
+            "prev": "Prev_Close",
+            "previous": "Prev_Close",
+            "volume": "Volume",
+            "vol": "Volume",
+            "high": "High",
+            "low": "Low",
+        }
+        df.rename(columns=col_map, inplace=True)
+
+        if "Ticker" not in df.columns or "Close" not in df.columns:
+            return None, "Malformed CSV structure."
+
+        # Clean numerical fields
+        for col in ["Close", "Prev_Close", "High", "Low", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+        df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
+        return df, "SUCCESS"
+    except Exception as e:
+        return None, f"Error parsing CSV: {str(e)}"
 
 
-def process_market_summary(raw_summary, min_volume=0):
-    """Processes 500+ stocks into quantitative scanner metrics."""
+def run_quant_analysis(df, min_volume=0):
+    """Calculates BTST and Swing algorithmic setups across all equities."""
     records = []
 
-    for item in raw_summary:
+    for _, item in df.iterrows():
         try:
-            symbol = str(
-                item.get("code") or item.get("symbol") or ""
-            ).strip().upper()
-            if not symbol:
+            symbol = str(item["Ticker"])
+            close_p = float(item["Close"])
+            prev_p = float(item.get("Prev_Close", close_p))
+            high_p = float(item.get("High", close_p))
+            low_p = float(item.get("Low", close_p))
+            vol = int(item.get("Volume", 0))
+
+            if close_p <= 0:
                 continue
 
-            close_p = float(item.get("close") or item.get("current") or 0.0)
-            prev_close = float(item.get("prev") or item.get("previous") or close_p)
-            vol = int(item.get("volume") or item.get("vol") or 0)
-            high_p = float(item.get("high") or close_p)
-            low_p = float(item.get("low") or close_p)
             change_pct = (
-                ((close_p - prev_close) / prev_close) * 100
-                if prev_close > 0
-                else 0.0
+                ((close_p - prev_p) / prev_p) * 100 if prev_p > 0 else 0.0
             )
 
+            # Volume filter (bypassed for LOR Right Shares)
             if min_volume > 0 and vol < min_volume and not symbol.endswith("R"):
                 continue
 
-            # --- BTST QUANT SCORE ---
+            # --- BTST ALGORITHM SCORE ---
             btst_score = 0.0
-            btst_tags = []
+            btst_reasons = []
 
             clr = (
                 (close_p - low_p) / (high_p - low_p)
@@ -125,31 +110,31 @@ def process_market_summary(raw_summary, min_volume=0):
             )
             if clr >= 0.75:
                 btst_score += 1.5
-                btst_tags.append("Strong High Close")
+                btst_reasons.append("High Close Ratio")
 
             if 1.0 <= change_pct <= 7.5:
                 btst_score += 1.5
-                btst_tags.append(f"+{change_pct:.1f}% Momentum")
+                btst_reasons.append(f"+{change_pct:.1f}% Momentum")
 
             if vol > 100000 or symbol.endswith("R"):
                 btst_score += 1.0
-                btst_tags.append("Active Liquidity")
+                btst_reasons.append("Active Liquidity")
 
-            # --- SWING QUANT SCORE ---
+            # --- SWING ALGORITHM SCORE ---
             swing_score = 0.0
-            swing_tags = []
+            swing_reasons = []
 
             if -3.0 <= change_pct <= 2.0:
                 swing_score += 2.0
-                swing_tags.append("Consolidation Zone")
+                swing_reasons.append("Base Consolidation")
 
             if vol > 50000:
                 swing_score += 1.5
-                swing_tags.append("Volume Support")
+                swing_reasons.append("Volume Floor")
 
             if symbol.endswith("R") or close_p < 20.0:
                 swing_score += 1.0
-                swing_tags.append("Low Float / Right Share")
+                swing_reasons.append("Low Float / Right Share")
 
             records.append({
                 "Ticker": symbol,
@@ -159,12 +144,16 @@ def process_market_summary(raw_summary, min_volume=0):
                 "BTST_Score": round(min(btst_score, 5.0), 1),
                 "BTST_Buy_Zone": f"{round(close_p * 0.99, 2)} - {round(close_p, 2)}",
                 "BTST_Reason": (
-                    " + ".join(btst_tags) if btst_tags else "Neutral setup"
+                    " + ".join(btst_reasons)
+                    if btst_reasons
+                    else "Neutral structure"
                 ),
                 "Swing_Score": round(min(swing_score, 5.0), 1),
                 "Swing_Buy_Zone": f"{round(close_p * 0.98, 2)} - {round(close_p * 1.01, 2)}",
                 "Swing_Reason": (
-                    " + ".join(swing_tags) if swing_tags else "Base structure"
+                    " + ".join(swing_reasons)
+                    if swing_reasons
+                    else "Base formation"
                 ),
             })
         except Exception:
@@ -209,26 +198,22 @@ st.session_state["portfolio"] = edited_pf
 
 st.sidebar.divider()
 
-if st.sidebar.button("🚀 Fast Scan ALL PSX Equities & Rights", type="primary"):
-    with st.spinner("Loading PSX market summary..."):
-        raw_data, source_name = fetch_full_psx_market()
-        if raw_data:
-            st.session_state["scan_data"] = process_market_summary(
-                raw_data, min_vol_input
-            )
-            st.session_state["scanned_count"] = len(
-                st.session_state["scan_data"]
-            )
+if st.sidebar.button("🚀 Load PSX Market CSV Snapshot", type="primary"):
+    with st.spinner("Processing local PSX market CSV..."):
+        raw_df, msg = load_psx_csv()
+        if raw_df is not None:
+            processed_df = run_quant_analysis(raw_df, min_vol_input)
+            st.session_state["scan_data"] = processed_df
+            st.session_state["scanned_count"] = len(processed_df)
             st.session_state["last_scan_time"] = time.strftime("%I:%M %p PKT")
-            st.session_state["source_used"] = source_name
         else:
-            st.error("Unable to load data snapshot.")
+            st.error(f"Failed to load CSV: {msg}")
 
 st.title("PSX All-Share Quant Scanner")
 
 if "last_scan_time" in st.session_state:
     st.caption(
-        f"Last Scan Executed: **{st.session_state['last_scan_time']}** | Source: **{st.session_state.get('source_used', 'N/A')}** | Active Equities: **{st.session_state.get('scanned_count', 0)}**"
+        f"Last Snapshot Loaded: **{st.session_state['last_scan_time']}** | Active Equities Captured: **{st.session_state.get('scanned_count', 0)}**"
     )
 
 if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
@@ -257,11 +242,11 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
 # MODE 1: BTST STRATEGY
 if strategy_view == "⚡ BTST / Overnight Setups":
     st.header("⚡ BTST Candidates (Buy Today 3:15 PM, Sell Tomorrow)")
-    st.caption("Evaluates all 500+ equities, micro-caps, and LOR right shares.")
+    st.caption("Evaluates all equities, micro-caps, and LOR right shares.")
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
         st.info(
-            "Click **'Fast Scan ALL PSX Equities & Rights'** in the sidebar to load all 500+ stocks."
+            "Click **'Load PSX Market CSV Snapshot'** in the sidebar to run the analysis."
         )
     else:
         btst_df = df_raw[df_raw["BTST_Score"] >= 2.0].sort_values(
@@ -296,7 +281,7 @@ elif strategy_view == "📈 Multi-Day Swing Setups":
 
     if "scan_data" not in st.session_state or st.session_state["scan_data"].empty:
         st.info(
-            "Click **'Fast Scan ALL PSX Equities & Rights'** in the sidebar to load all 500+ stocks."
+            "Click **'Load PSX Market CSV Snapshot'** in the sidebar to run the analysis."
         )
     else:
         swing_df = df_raw[df_raw["Swing_Score"] >= 2.0].sort_values(
@@ -396,5 +381,5 @@ if "scan_data" in st.session_state and not st.session_state["scan_data"].empty:
                 "Swing_Reason",
             ]],
             use_container_width=True,
-        )
+)
         
