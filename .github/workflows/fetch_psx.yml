@@ -29,21 +29,37 @@ jobs:
           import pandas as pd
           from curl_cffi import requests
 
-          url = "https://dps.psx.com.pk/data/summary"
-          try:
-              res = requests.get(url, impersonate="chrome120", timeout=15)
-              if res.status_code == 200:
-                  data = res.json()
-                  if isinstance(data, list) and len(data) > 50:
-                      df = pd.DataFrame(data)
-                      df.to_csv("psx_market_data.csv", index=False)
-                      print(f"Successfully generated psx_market_data.csv with {len(df)} tickers.")
-                  else:
-                      raise Exception("Received empty or invalid JSON array.")
-              else:
-                  raise Exception(f"PSX Server returned status code: {res.status_code}")
-          except Exception as e:
-              print(f"Error fetching PSX data: {str(e)}")
+          # Working PSX summary endpoint paths
+          urls = [
+              "https://dps.psx.com.pk/market-watch",
+              "https://dps.psx.com.pk/summary"
+          ]
+
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept": "application/json, text/javascript, */*; q=0.01",
+              "X-Requested-With": "XMLHttpRequest"
+          }
+
+          success = False
+          for url in urls:
+              try:
+                  print(f"Attempting to fetch from: {url}")
+                  res = requests.get(url, headers=headers, impersonate="chrome120", timeout=15)
+                  if res.status_code == 200:
+                      data = res.json()
+                      records = data if isinstance(data, list) else data.get("stocks", data.get("data", []))
+                      if len(records) > 0:
+                          df = pd.DataFrame(records)
+                          df.to_csv("psx_market_data.csv", index=False)
+                          print(f"Successfully generated psx_market_data.csv with {len(df)} records.")
+                          success = True
+                          break
+              except Exception as e:
+                  print(f"Failed fetching {url}: {str(e)}")
+
+          if not success:
+              print("Error: All PSX endpoints failed.")
               exit(1)
           EOF
           python fetch.py
