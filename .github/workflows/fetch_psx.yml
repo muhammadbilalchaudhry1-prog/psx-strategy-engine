@@ -1,45 +1,70 @@
-import time
-import requests
+name: Sync PSX Market Data
 
-symbols = [...]  # Your list of ~125 stocks
-data = []
+on:
+  push:
+    branches: [ main, master ]
+  schedule:
+    # Runs every 15 minutes during PSX market hours (04:00 to 11:00 UTC)
+    - cron: '*/15 4-11 * * 1-5'
+  workflow_dispatch:
 
-headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
+jobs:
+  fetch-and-save:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-for symbol in symbols:
-    success = False
-    for attempt in range(3):  # Retry up to 3 times
-        try:
-            # Example endpoint - adjust to match your exact endpoint URL
-            url = f"https://dps.psx.com.pk/company/{symbol}"
-            response = requests.get(url, headers=headers, timeout=8)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-            if response.status_code == 200:
-                # Process your stock data here...
-                print(f"Successfully fetched {symbol}")
-                success = True
-                break
-            else:
-                print(
-                    f"Attempt {attempt + 1} failed for {symbol}: Status"
-                    f" {response.status_code}"
-                )
+      - name: Install Dependencies
+        run: pip install psxdata pandas requests
 
-        except Exception as e:
-            print(f"Attempt {attempt + 1} exception for {symbol}: {e}")
+      - name: Fetch All PSX Market Quotes
+        run: |
+          cat << 'EOF' > fetch.py
+          import psxdata
+          import pandas as pd
 
-        time.sleep(1.5)  # Short pause between retries
+          try:
+              print("Fetching PSX market data...")
+              # Fetch all listed tickers automatically
+              df = psxdata.sectors()
+              
+              if df is None or df.empty:
+                  print("Sector fetch returned empty. Fetching individual quotes...")
+                  tickers = psxdata.tickers()
+                  records = []
+                  for t in tickers[:125]: # Fetching top 125 tickers
+                      try:
+                          q = psxdata.quote(t)
+                          if q:
+                              records.append(q)
+                      except Exception as inner_e:
+                          print(f"Skipped symbol {t}: {inner_e}")
+                          continue
+                  df = pd.DataFrame(records)
 
-    if not success:
-        print(
-            f"⚠️ Skipping {symbol} after 3 failed attempts. Continuing next"
-            " stock..."
-        )
+              if not df.empty:
+                  df.to_csv("psx_market_data.csv", index=False)
+                  print(f"Successfully saved psx_market_data.csv with {len(df)} rows.")
+              else:
+                  raise Exception("Failed to fetch any market data.")
 
-# Proceed to process and save 'data' to CSV/JSON even if a few stocks failed
+          except Exception as e:
+              print(f"Error during execution: {e}")
+              exit(1)
+          EOF
+          python fetch.py
+
+      - name: Commit & Push CSV Snapshot
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add psx_market_data.csv
+          git commit -m "Auto-update PSX market CSV snapshot" || exit 0
+          git push
+          
