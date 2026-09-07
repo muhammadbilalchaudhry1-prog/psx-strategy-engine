@@ -1,73 +1,45 @@
-name: Sync PSX Market Data
+import time
+import requests
 
-on:
-  push:
-    branches: [ main, master ]
-  schedule:
-    # Runs every 15 minutes during PSX market hours (04:00 to 11:00 UTC)
-    - cron: '*/15 4-11 * * 1-5'
-  workflow_dispatch:
+symbols = [...]  # Your list of ~125 stocks
+data = []
 
-jobs:
-  fetch-and-save:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+headers = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+for symbol in symbols:
+    success = False
+    for attempt in range(3):  # Retry up to 3 times
+        try:
+            # Example endpoint - adjust to match your exact endpoint URL
+            url = f"https://dps.psx.com.pk/company/{symbol}"
+            response = requests.get(url, headers=headers, timeout=8)
 
-      - name: Install Dependencies
-        run: pip install requests curl_cffi pandas
+            if response.status_code == 200:
+                # Process your stock data here...
+                print(f"Successfully fetched {symbol}")
+                success = True
+                break
+            else:
+                print(
+                    f"Attempt {attempt + 1} failed for {symbol}: Status"
+                    f" {response.status_code}"
+                )
 
-      - name: Fetch PSX Summary & Save CSV
-        run: |
-          cat << 'EOF' > fetch.py
-          import pandas as pd
-          from curl_cffi import requests
+        except Exception as e:
+            print(f"Attempt {attempt + 1} exception for {symbol}: {e}")
 
-          # Working PSX summary endpoint paths
-          urls = [
-              "https://dps.psx.com.pk/market-watch",
-              "https://dps.psx.com.pk/summary"
-          ]
+        time.sleep(1.5)  # Short pause between retries
 
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-              "Accept": "application/json, text/javascript, */*; q=0.01",
-              "X-Requested-With": "XMLHttpRequest"
-          }
+    if not success:
+        print(
+            f"⚠️ Skipping {symbol} after 3 failed attempts. Continuing next"
+            " stock..."
+        )
 
-          success = False
-          for url in urls:
-              try:
-                  print(f"Attempting to fetch from: {url}")
-                  res = requests.get(url, headers=headers, impersonate="chrome120", timeout=15)
-                  if res.status_code == 200:
-                      data = res.json()
-                      records = data if isinstance(data, list) else data.get("stocks", data.get("data", []))
-                      if len(records) > 0:
-                          df = pd.DataFrame(records)
-                          df.to_csv("psx_market_data.csv", index=False)
-                          print(f"Successfully generated psx_market_data.csv with {len(df)} records.")
-                          success = True
-                          break
-              except Exception as e:
-                  print(f"Failed fetching {url}: {str(e)}")
-
-          if not success:
-              print("Error: All PSX endpoints failed.")
-              exit(1)
-          EOF
-          python fetch.py
-
-      - name: Commit & Push CSV Snapshot
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add psx_market_data.csv
-          git commit -m "Auto-update PSX market CSV snapshot" || exit 0
-          git push
+# Proceed to process and save 'data' to CSV/JSON even if a few stocks failed
