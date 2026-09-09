@@ -18,44 +18,41 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install psxdata pandas requests
+        run: pip install psx-data-reader pandas requests
 
-      - name: Fetch All PSX Market Quotes
+      - name: Fetch PSX Stock Data
         run: |
           cat << 'EOF' > fetch.py
-          import psxdata
+          import datetime
           import pandas as pd
+          from psx import tickers, stocks
 
           try:
-              print("Fetching PSX market data...")
-              # Fetch all listed tickers automatically
-              df = psxdata.sectors()
+              print("Fetching stock ticker list...")
+              all_tickers = tickers()
               
-              if df is None or df.empty:
-                  print("Sector fetch returned empty. Fetching individual quotes...")
-                  tickers = psxdata.tickers()
-                  records = []
-                  for t in tickers[:125]: # Fetching top 125 tickers
-                      try:
-                          q = psxdata.quote(t)
-                          if q:
-                              records.append(q)
-                      except Exception as inner_e:
-                          print(f"Skipped symbol {t}: {inner_e}")
-                          continue
-                  df = pd.DataFrame(records)
+              # Limit to target list (~125 symbols) to prevent API rate limits
+              target_tickers = all_tickers[:125] if len(all_tickers) >= 125 else all_tickers
+              
+              today = datetime.date.today()
+              start_date = today - datetime.timedelta(days=5)
 
-              if not df.empty:
+              print(f"Fetching market data for {len(target_tickers)} symbols...")
+              df = stocks(target_tickers, start=start_date, end=today)
+
+              if df is not None and not df.empty:
+                  # Reset multi-index if returned by psx-data-reader
+                  df = df.reset_index()
                   df.to_csv("psx_market_data.csv", index=False)
                   print(f"Successfully saved psx_market_data.csv with {len(df)} rows.")
               else:
-                  raise Exception("Failed to fetch any market data.")
+                  raise Exception("Fetched DataFrame was empty.")
 
           except Exception as e:
-              print(f"Error during execution: {e}")
+              print(f"Error occurred during fetch: {str(e)}")
               exit(1)
           EOF
           python fetch.py
@@ -67,4 +64,3 @@ jobs:
           git add psx_market_data.csv
           git commit -m "Auto-update PSX market CSV snapshot" || exit 0
           git push
-          
