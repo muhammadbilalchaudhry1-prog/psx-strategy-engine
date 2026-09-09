@@ -20,40 +20,63 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
-        run: pip install psx-data-reader pandas requests
+      - name: Install Playwright & Dependencies
+        run: |
+          pip install pandas playwright
+          playwright install chromium --with-deps
 
-      - name: Fetch PSX Stock Data
+      - name: Fetch PSX Market Watch Snapshot
         run: |
           cat << 'EOF' > fetch.py
-          import datetime
+          import time
           import pandas as pd
-          from psx import tickers, stocks
+          from playwright.sync_api import sync_playwright
 
-          try:
-              print("Fetching stock ticker list...")
-              all_tickers = tickers()
-              
-              # Limit to target list (~125 symbols) to prevent API rate limits
-              target_tickers = all_tickers[:125] if len(all_tickers) >= 125 else all_tickers
-              
-              today = datetime.date.today()
-              start_date = today - datetime.timedelta(days=5)
+          def scrape_psx():
+              with sync_playwright() as p:
+                  print("Launching Headless Chromium...")
+                  browser = p.chromium.launch(headless=True)
+                  context = browser.new_context(
+                      user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                  )
+                  page = context.new_page()
 
-              print(f"Fetching market data for {len(target_tickers)} symbols...")
-              df = stocks(target_tickers, start=start_date, end=today)
+                  # Capture network response directly from PSX Data Portal
+                  json_data = []
 
-              if df is not None and not df.empty:
-                  # Reset multi-index if returned by psx-data-reader
-                  df = df.reset_index()
-                  df.to_csv("psx_market_data.csv", index=False)
-                  print(f"Successfully saved psx_market_data.csv with {len(df)} rows.")
-              else:
-                  raise Exception("Fetched DataFrame was empty.")
+                  def handle_response(response):
+                      nonlocal json_data
+                      if "market-watch" in response.url or "summary" in response.url:
+                          try:
+                              if response.status == 200 and "json" in response.headers.get("content-type", ""):
+                                  data = response.json()
+                                  if isinstance(data, list) and len(data) > 20:
+                                      json_data = data
+                                  elif isinstance(data, dict):
+                                      stocks = data.get("stocks", data.get("data", []))
+                                      if len(stocks) > 20:
+                                          json_data = stocks
+                          except Exception:
+                              pass
 
-          except Exception as e:
-              print(f"Error occurred during fetch: {str(e)}")
-              exit(1)
+                  page.on("response", handle_response)
+
+                  print("Navigating to PSX Market Watch portal...")
+                  page.goto("https://dps.psx.com.pk/", timeout=60000, wait_until="networkidle")
+                  time.sleep(5)
+
+                  browser.close()
+
+                  if json_data:
+                      df = pd.DataFrame(json_data)
+                      df.to_csv("psx_market_data.csv", index=False)
+                      print(f"Success! Generated psx_market_data.csv with {len(df)} tickers.")
+                  else:
+                      # Fallback mock/dummy check if block occurs
+                      raise Exception("Failed to intercept JSON stream from PSX portal.")
+
+          if __name__ == "__main__":
+              scrape_psx()
           EOF
           python fetch.py
 
@@ -64,3 +87,4 @@ jobs:
           git add psx_market_data.csv
           git commit -m "Auto-update PSX market CSV snapshot" || exit 0
           git push
+          
